@@ -1,0 +1,17 @@
+[package]
+name = "s3-cli"
+version = "0.1.0"
+authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+s3-algo = "0.1.13"
+rusoto_s3 = "0.43.0-beta.1"
+rusoto_core = "0.43.0-beta.1"
+tokio = {version = "0.2.13", features = ["macros", "sync"]}
+clap = "2.33.0"
+regex = "1.3.4"
+pbr = "1.0.2"
+walkdir = "2.3.1"
