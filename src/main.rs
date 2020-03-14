@@ -2,6 +2,7 @@
 use clap::{App, Arg, SubCommand};
 use regex::Regex;
 use rusoto_core::{credential::ProfileProvider, region::Region, HttpClient};
+use rusoto_s3::PutObjectRequest;
 use s3_algo::*;
 use std::{
     path::{Path, PathBuf},
@@ -83,6 +84,7 @@ async fn main() {
         )
         .get_matches();
 
+
     if let Some(matches) = matches.subcommand_matches("cp") {
         let src = Location::from(matches.value_of("src").unwrap());
         let dest = Location::from(matches.value_of("dest").unwrap());
@@ -95,6 +97,22 @@ async fn main() {
             "eu-west-1" => Region::EuWest1,
             "us-east-1" => Region::UsEast1,
             _ => unimplemented!(),
+        };
+
+        let cfg = UploadConfig {
+            backoff: 1.5,
+            ..Default::default()
+        };
+
+        let put_request_factory = move || {
+            PutObjectRequest {
+                server_side_encryption: if sse {
+                    Some("AES256".to_string())
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
         };
 
         match (src, dest) {
@@ -117,7 +135,7 @@ async fn main() {
                     cli,
                     bucket,
                     files_recursive(path, PathBuf::from(&key)),
-                    UploadConfig::default(),
+                    cfg,
                     move |report| {
                         let pb = pb.clone();
                         async move {
@@ -125,7 +143,7 @@ async fn main() {
                             pb.lock().await.add(report.bytes);
                         }
                     },
-                    Default::default,
+                    put_request_factory,
                 )
                 .await
                 .unwrap();
