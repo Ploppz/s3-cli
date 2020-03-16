@@ -1,7 +1,13 @@
 # s3-cli
 
-Example:
+## Example
+
+Upload:
 
 ```
-cargo run -- cp  target localhost:9000/test-bucket/hey --profile testing
+cargo run -- --profile testing cp src localhost:9000/test-bucket/hey
+```
+Remove:
+```
+cargo run -- --profile testing rm localhost:9000/test-bucket/hey
 ```

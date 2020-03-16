@@ -2,7 +2,7 @@
 use clap::{App, Arg, SubCommand};
 use regex::Regex;
 use rusoto_core::{credential::ProfileProvider, region::Region, HttpClient};
-use rusoto_s3::PutObjectRequest;
+use rusoto_s3::{PutObjectRequest, S3Client};
 use s3_algo::*;
 use std::{
     path::{Path, PathBuf},
@@ -52,87 +52,89 @@ impl From<&str> for Location {
     }
 }
 
+fn s3_client(profile: &str, sse: bool, region: &str, host: Option<String>) -> S3Client {
+    let client = HttpClient::new().unwrap();
+    let mut region = match region {
+        "eu-west-1" => Region::EuWest1,
+        "us-east-1" => Region::UsEast1,
+        _ => unimplemented!(),
+    };
+    if let Some(host) = host {
+        region = Region::Custom {
+            name: "custom".into(),
+            endpoint: format!("http://{}", host),
+        };
+    }
+    let mut pr = ProfileProvider::new().unwrap();
+    pr.set_profile(profile);
+    rusoto_s3::S3Client::new_with(client, pr, region)
+}
+
 #[tokio::main]
 async fn main() {
     // TODO: Make it more useful.
     // So far we only allow copying from disk to S3, with a very limited set of options
 
-    let matches = App::new("s3")
+    let all_matches = App::new("s3")
+        .arg(
+            Arg::with_name("profile")
+                .long("profile")
+                .required(true)
+                .takes_value(true)
+                .help("Set profile"),
+        )
+        .arg(
+            Arg::with_name("sse")
+                .long("sse")
+                .help("Enable SSE")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("region")
+                .long("region")
+                .help("AWS region. Default: eu-west-1")
+                .takes_value(true),
+        )
         .subcommand(
             SubCommand::with_name("cp")
                 .arg(Arg::with_name("src").required(true))
-                .arg(Arg::with_name("dest").required(true))
-                .arg(
-                    Arg::with_name("profile")
-                        .long("profile")
-                        .required(true)
-                        .takes_value(true)
-                        .help("Set profile"),
-                )
-                .arg(
-                    Arg::with_name("sse")
-                        .long("sse")
-                        .help("Enable SSE")
-                        .takes_value(false),
-                )
-                .arg(
-                    Arg::with_name("region")
-                        .long("region")
-                        .help("AWS region. Default: eu-west-1")
-                        .takes_value(true),
-                ),
+                .arg(Arg::with_name("dest").required(true)),
         )
+        .subcommand(SubCommand::with_name("rm").arg(Arg::with_name("prefix").required(true)))
         .get_matches();
 
+    let profile = all_matches.value_of("profile").unwrap();
+    let sse = all_matches.is_present("sse");
+    let region = all_matches.value_of("region").unwrap_or("eu-west-1");
 
-    if let Some(matches) = matches.subcommand_matches("cp") {
+    if let Some(matches) = all_matches.subcommand_matches("cp") {
         let src = Location::from(matches.value_of("src").unwrap());
         let dest = Location::from(matches.value_of("dest").unwrap());
-        let profile = matches.value_of("profile").unwrap();
-        let sse = matches.is_present("sse");
-        let region = matches.value_of("region").unwrap_or("eu-west-1");
-
-        let client = HttpClient::new().unwrap();
-        let mut region = match region {
-            "eu-west-1" => Region::EuWest1,
-            "us-east-1" => Region::UsEast1,
-            _ => unimplemented!(),
-        };
 
         let cfg = UploadConfig {
             backoff: 1.5,
             ..Default::default()
         };
 
-        let put_request_factory = move || {
-            PutObjectRequest {
-                server_side_encryption: if sse {
-                    Some("AES256".to_string())
-                } else {
-                    None
-                },
-                ..Default::default()
-            }
+        let put_request_factory = move || PutObjectRequest {
+            server_side_encryption: if sse {
+                Some("AES256".to_string())
+            } else {
+                None
+            },
+            ..Default::default()
         };
 
         match (src, dest) {
             (Location::Path(path), Location::S3 { host, bucket, key }) => {
                 let total_bytes = count_bytes_recursive(&path);
-                let mut pr = ProfileProvider::new().unwrap();
-                pr.set_profile(profile);
 
+                let s3 = s3_client(profile, sse, region, host);
                 let mut pb = pbr::ProgressBar::new(total_bytes);
                 pb.set_units(pbr::Units::Bytes);
                 let pb = Arc::new(Mutex::new(pb));
-                if let Some(host) = host {
-                    region = Region::Custom {
-                        name: "custom".into(),
-                        endpoint: format!("http://{}", host),
-                    };
-                }
-                let cli = rusoto_s3::S3Client::new_with(client, pr, region);
                 s3_upload_files(
-                    cli,
+                    s3,
                     bucket,
                     files_recursive(path, PathBuf::from(&key)),
                     cfg,
@@ -149,6 +151,15 @@ async fn main() {
                 .unwrap();
             }
             _ => unimplemented!(),
+        }
+    } else if let Some(matches) = all_matches.subcommand_matches("rm") {
+        let prefix = Location::from(matches.value_of("prefix").unwrap());
+        match prefix {
+            Location::S3 { host, bucket, key } => {
+                let s3 = s3_client(profile, sse, region, host);
+                s3_list_prefix(s3, bucket, key).delete_all().await.unwrap();
+            }
+            _ => panic!("Error: `prefix` must be an S3 location"),
         }
     } else {
         unimplemented!()
